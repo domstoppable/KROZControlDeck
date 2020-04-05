@@ -9,12 +9,17 @@ import math
 import inspect
 import pathlib
 import tkinter
+import pkg_resources
 
 from enum import Enum, auto
 
 import obspython as obs
 
 multiprocessing.set_executable(os.path.join(sys.exec_prefix, 'pythonw.exe'))
+
+def locateAsset(*resourceParts):
+	resource = '/'.join(['assets'] + list(resourceParts))
+	return pkg_resources.resource_filename(__name__, resource)
 
 def findLatestCapture(directory, ignoreName=None):
 	def new_video_sort_key(f):
@@ -107,7 +112,11 @@ class OBSProp():
 			'setDefault': obs.obs_data_set_default_double,
 			'get': obs.obs_data_get_double,
 		},
-		# int
+		obs.OBS_PROPERTY_INT: {
+			'add': lambda a,b,c: obs.obs_properties_add_int(a, b, c, -99999999, 99999999, 1),
+			'setDefault': obs.obs_data_set_default_int,
+			'get': obs.obs_data_get_int,
+		},
 	}
 
 	dataTypeMap = {
@@ -331,7 +340,7 @@ class ScriptGUI():
 
 	def _tick(self):
 		try:
-			self.root.after(250, self._tick)
+			self.root.after(int(1000/15), self._tick)
 
 			if self.pipe.poll():
 				msg = self.pipe.recv()
@@ -374,7 +383,7 @@ class ScriptGUI():
 		try:
 			self._tick()
 			self.root.mainloop()
-			self.log('Finished')
+			self.debug('GUI exited gracefully')
 		except Exception as exc:
 			self.exception(exc)
 

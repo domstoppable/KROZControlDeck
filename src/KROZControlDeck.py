@@ -2,6 +2,7 @@ import obspython as obs
 import OBSScriptLib
 import os, pathlib
 import tkinter
+from tkinter import ttk, messagebox
 import subprocess
 from datetime import datetime
 
@@ -54,12 +55,15 @@ class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 		if self.settings['open_immediately']:
 			self.toggleWindow()
 
+		self.recordingSignalHandler = obs.obs_output_get_signal_handler(obs.obs_frontend_get_recording_output())
+		self.registerForEvents()
+		print(f'{self.name} Loaded!')
+
+	def registerForEvents(self):
 		def recordingFinished(*args):
 			return self.onRecordingFinished(*args)
-		self.recordingSignalHandler = obs.obs_output_get_signal_handler(obs.obs_frontend_get_recording_output())
-		obs.signal_handler_connect(self.recordingSignalHandler, "stop", recordingFinished)
 
-		print(f'{self.name} Loaded!')
+		obs.signal_handler_connect(self.recordingSignalHandler, 'stop', recordingFinished)
 
 	def onGUIProcessStarted(self):
 		super().onGUIProcessStarted()
@@ -86,13 +90,21 @@ class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 				else:
 					obs.obs_frontend_recording_start()
 			elif msg.data == 'reset':
-				self.log('reset')
+				if obs.obs_frontend_recording_paused() or obs.obs_frontend_recording_active():
+					self.log('Resetting to last checkpoint')
 				self.saveCompleteAction = self.deleteOnSaveCompleteAndResume
 				obs.obs_frontend_recording_stop()
+				else:
+					self.log('Starting recording')
+					obs.obs_frontend_recording_start()
 			elif msg.data == 'checkpoint':
-				self.log('checkpoint')
+				if obs.obs_frontend_recording_paused() or obs.obs_frontend_recording_active():
+					self.log('Checkpoint!')
 				self.saveCompleteAction = self.resume
 				obs.obs_frontend_recording_stop()
+				else:
+					self.log('Starting recording')
+					obs.obs_frontend_recording_start()
 			elif msg.data == 'combine':
 				if obs.obs_frontend_recording_paused() or  obs.obs_frontend_recording_active():
 					obs.obs_frontend_recording_stop()
@@ -100,31 +112,38 @@ class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 				self.combineVideos()
 
 	def combineVideos(self):
+		now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+
 		path = pathlib.Path(self.settings['video_path'])
 		chapters = sorted(path.glob('*.mkv'))
 
-		chapterFilePath = path / 'chapters.txt'
-		with chapterFilePath.open('w') as chapterFile:
-			for c in chapters:
-				chapterFile.write("file '%s'\n" % str(c))
+		processedFolder = path / 'processed'
+		processedFolder.mkdir(parents=True, exist_ok=True)
 
-		now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 		outputFilePath = path / f'combined/{now}-combined.mkv'
 		outputFilePath.parent.mkdir(parents=True, exist_ok=True)
+
+		chapterFilePath = path / f'chapters-{now}.txt'
+		with chapterFilePath.open('w') as chapterFile:
+			for c in chapters:
+				chapterFile.write('file \'%s\'\n' % str(c))
 
 		ffmpegPath = self.settings['ffmpeg_path'] / 'ffmpeg'
 		ffmpegCommand = f'"{ffmpegPath}" -f concat -safe 0 -i "{chapterFilePath}" -c copy "{outputFilePath}"'
 		self.log(ffmpegCommand)
 
-		ffmpegResult = subprocess.run(ffmpegCommand, check=True, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-		self.log(ffmpegResult.stderr)
-
-		processedFolder = path / 'processed'
-		processedFolder.mkdir(parents=True, exist_ok=True)
-		for chapterVideo in chapters:
-			chapterVideo.rename(processedFolder / chapterVideo.name)
-
+		stdoutPath = outputFilePath.parent / (outputFilePath.stem + '-output.txt')
+		stdoutPath.write_text(str(chapterFilePath) + '\r\n' + chapterFilePath.read_text() + '\r\n********\r\n' + ffmpegCommand + '\r\n')
+		ffmpegResult = subprocess.run(ffmpegCommand, check=True, universal_newlines=True, stdout=stdoutPath.open('a'), stderr=subprocess.STDOUT)
 		chapterFilePath.unlink()
+
+		self.send(OBSScriptLib.MessageType.OBS_EVENT, 'combine-complete')
+
+		for chapterVideo in chapters:
+			try:
+			chapterVideo.rename(processedFolder / chapterVideo.name)
+			except:
+				self.log('Failed to move ' + chapterVideo.name)
 
 	def onTick(self, seconds):
 		super().onTick(seconds)
@@ -162,25 +181,35 @@ class KROZ_GUI(OBSScriptLib.ScriptGUI):
 
 		root.geometry('360x360')
 		root.title('KROZ Control Deck')
+		root.iconphoto(False, tkinter.PhotoImage(file=OBSScriptLib.locateAsset('kroz-icon.png')))
+
+		self.tabWidget = ttk.Notebook(root)
+		self.recordingControlsTab = ttk.Frame(self.tabWidget)
+		self.fileToolsTab = ttk.Frame(self.tabWidget)
+
+		self.tabWidget.add(self.recordingControlsTab, text='Controller')
+		self.tabWidget.add(self.fileToolsTab, text='File tools')
+		self.tabWidget.pack(expand=1, fill=tkinter.BOTH)
 
 		self.labelText = tkinter.StringVar()
 		self.labelText.set('⌛')
 
-		self.combineButton = tkinter.Button(root, text='Combine', command=self.combine)
-		self.combineButton.config(font=('Impact', 18))
-		self.combineButton.pack(expand=True, fill=tkinter.BOTH)
-
-		self.label = tkinter.Button(root, textvariable=self.labelText, fg='gray', bg='black', command=self.onClick)
+		self.label = tkinter.Button(self.recordingControlsTab, textvariable=self.labelText, fg='gray', bg='black', command=self.onClick)
 		self.label.config(font=('Impact', 44))
 		self.label.pack(expand=True, fill=tkinter.BOTH)
 
-		self.resetButton = tkinter.Button(root, text='⎌ Reset', command=self.reset)
+		self.resetButton = tkinter.Button(self.recordingControlsTab, text='⎌ Reset', command=self.reset)
 		self.resetButton.config(font=('Impact', 18))
 		self.resetButton.pack(expand=True, fill=tkinter.BOTH, side=tkinter.LEFT)
 
-		self.checkpointButton = tkinter.Button(root, text='✓ Checkpoint', command=self.checkpoint)
+		self.checkpointButton = tkinter.Button(self.recordingControlsTab, text='✓ Checkpoint', command=self.checkpoint)
 		self.checkpointButton.config(font=('Impact', 18))
 		self.checkpointButton.pack(expand=True, fill=tkinter.BOTH, side=tkinter.RIGHT)
+
+		self.combineButton = tkinter.Button(self.fileToolsTab, text='Combine all loose videos', command=self.combine)
+		self.combineButton.config(font=('Impact', 18))
+		self.combineButton.pack(expand=True, fill=tkinter.BOTH)
+
 
 	def setState(self, state):
 		self.debug('Received state %s' % state)
@@ -213,6 +242,8 @@ class KROZ_GUI(OBSScriptLib.ScriptGUI):
 				self.setState(States.PAUSED)
 			elif msg.data == obs.OBS_FRONTEND_EVENT_EXIT:
 				self.root.quit()
+			elif msg.data == 'combine-complete':
+				messagebox.showinfo('Render complete', 'All of your loose videos have been combined into a single render and organized!')
 		elif msg.type == OBSScriptLib.MessageType.OBS_SETTINGS:
 			self.refreshDisplay()
 
