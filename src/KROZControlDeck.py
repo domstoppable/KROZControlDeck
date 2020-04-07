@@ -8,18 +8,21 @@ from datetime import datetime
 
 from enum import Enum, auto
 
+#from NetworkClient import NetworkClient
+
 class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 	def __init__(self):
 		desc = '''            ██╗      ██╗  ██████╗        ██████╗     ███████╗
-            ██║   ██╔╝  ██╔══██╗  ██╔═══██╗  ╚══███╔╝              😻
-            █████╔╝     ██████╔╝  ██║         ██║        ███╔╝            Control
-            ██╔═██╗     ██╔══██╗  ██║         ██║     ███╔╝                 Deck
-            ██║      ██╗  ██║      ██║  ╚██████╔╝  ███████╗
-            ╚═╝      ╚═╝  ╚═╝      ╚═╝     ╚═════╝     ╚══════╝'''
+			██║   ██╔╝  ██╔══██╗  ██╔═══██╗  ╚══███╔╝              😻
+			█████╔╝     ██████╔╝  ██║         ██║        ███╔╝            Control
+			██╔═██╗     ██╔══██╗  ██║         ██║     ███╔╝                 Deck
+			██║      ██╗  ██║      ██║  ╚██████╔╝  ███████╗
+			╚═╝      ╚═╝  ╚═╝      ╚═╝     ╚═════╝     ╚══════╝'''
 		super().__init__(desc, KROZ_GUI)
 
 		self.saveCompleteAction = None
 		self.restartRecordingTimer = 0
+#		self.pptClient = None
 
 
 	def setupProperties(self):
@@ -46,6 +49,26 @@ class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 		self.addProperty('video_path', 'Path to video location', pathlib.Path('~/Videos').expanduser())
 		self.addProperty('resume_delay', 'Delay (s) before resuming record', .5)
 
+#		self.addProperty('ppt_host', 'PowerPoint host', '127.0.0.1')
+#		self.addProperty('ppt_port', 'PowerPoint port', 12345)
+#
+#	def _setupProperties(self):
+#		def connectToPPT(props, prop):
+#			self.connectToPPT()
+#	
+#		obsProps = super()._setupProperties()
+#		obs.obs_properties_add_button(obsProps, 'connect_to_ppt', 'Connect to PPT', connectToPPT)
+#	
+#		return obsProps
+#
+#	def connectToPPT(self):
+#		self.pptClient = NetworkClient(self.settings['ppt_host'], self.settings['ppt_port'])
+#		if not self.pptClient.connect():
+#			self.pptClient = None
+#			self.log('PPT connection failed!')
+#		else:
+#			self.log('PPT connected')
+
 	def onFrontendEvent(self, event):
 		self.send(OBSScriptLib.MessageType.OBS_EVENT, event)
 
@@ -62,7 +85,7 @@ class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 	def registerForEvents(self):
 		def recordingFinished(*args):
 			return self.onRecordingFinished(*args)
-
+		
 		obs.signal_handler_connect(self.recordingSignalHandler, 'stop', recordingFinished)
 
 	def onGUIProcessStarted(self):
@@ -92,16 +115,16 @@ class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 			elif msg.data == 'reset':
 				if obs.obs_frontend_recording_paused() or obs.obs_frontend_recording_active():
 					self.log('Resetting to last checkpoint')
-				self.saveCompleteAction = self.deleteOnSaveCompleteAndResume
-				obs.obs_frontend_recording_stop()
+					self.saveCompleteAction = self.deleteOnSaveCompleteAndResume
+					obs.obs_frontend_recording_stop()
 				else:
 					self.log('Starting recording')
 					obs.obs_frontend_recording_start()
 			elif msg.data == 'checkpoint':
 				if obs.obs_frontend_recording_paused() or obs.obs_frontend_recording_active():
 					self.log('Checkpoint!')
-				self.saveCompleteAction = self.resume
-				obs.obs_frontend_recording_stop()
+					self.saveCompleteAction = self.resume
+					obs.obs_frontend_recording_stop()
 				else:
 					self.log('Starting recording')
 					obs.obs_frontend_recording_start()
@@ -141,7 +164,7 @@ class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 
 		for chapterVideo in chapters:
 			try:
-			chapterVideo.rename(processedFolder / chapterVideo.name)
+				chapterVideo.rename(processedFolder / chapterVideo.name)
 			except:
 				self.log('Failed to move ' + chapterVideo.name)
 
@@ -153,8 +176,25 @@ class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 				self.debug('RESUMING')
 				obs.obs_frontend_recording_start()
 
+#		if self.pptClient is not None:
+#			try:
+#				pptMsgs = self.pptClient.getMessages()
+#				for pptMsg in pptMsgs:
+#					self.debug('Received PPT MSG: %s' % pptMsg)
+#					self.onPPTMessage(pptMsg)
+#			except ConnectionResetError:
+#				self.log('Lost PPT connection')
+#				self.pptClient = None
+#	
+#	def onPPTMessage(self, msg):
+#		bits = msg.split('|')
+#		if bits[0] == 'change-slide':
+#			self.log('ppt checkpoint')
+#			self.saveCompleteAction = self.resume
+#			obs.obs_frontend_recording_stop()
+#
 	def onRecordingFinished(self, data):
-		stopCode = obs.calldata_int(data, "code")
+		stopCode = obs.calldata_int(data, 'code')
 		if stopCode == 0:
 			if self.saveCompleteAction is not None:
 				self.saveCompleteAction()
