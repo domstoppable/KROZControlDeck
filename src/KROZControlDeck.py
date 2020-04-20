@@ -1,3 +1,4 @@
+import sys
 import obspython as obs
 import OBSScriptLib
 import os, pathlib
@@ -7,23 +8,26 @@ import subprocess
 from datetime import datetime
 
 from enum import Enum, auto
+from system_hotkey import SystemHotkey
 
 #from NetworkClient import NetworkClient
 
 class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 	def __init__(self):
 		desc = '''            ██╗      ██╗  ██████╗        ██████╗     ███████╗
-			██║   ██╔╝  ██╔══██╗  ██╔═══██╗  ╚══███╔╝              😻
-			█████╔╝     ██████╔╝  ██║         ██║        ███╔╝            Control
-			██╔═██╗     ██╔══██╗  ██║         ██║     ███╔╝                 Deck
-			██║      ██╗  ██║      ██║  ╚██████╔╝  ███████╗
-			╚═╝      ╚═╝  ╚═╝      ╚═╝     ╚═════╝     ╚══════╝'''
+            ██║   ██╔╝  ██╔══██╗  ██╔═══██╗  ╚══███╔╝              😻
+            █████╔╝     ██████╔╝  ██║         ██║        ███╔╝            Control
+            ██╔═██╗     ██╔══██╗  ██║         ██║     ███╔╝                 Deck
+            ██║      ██╗  ██║      ██║  ╚██████╔╝  ███████╗
+            ╚═╝      ╚═╝  ╚═╝      ╚═╝     ╚═════╝     ╚══════╝'''
 		super().__init__(desc, KROZ_GUI)
 
 		self.saveCompleteAction = None
 		self.restartRecordingTimer = 0
 #		self.pptClient = None
 
+		self.hotkeys = {}
+		self.systemHotkey = SystemHotkey()
 
 	def setupProperties(self):
 		super().setupProperties()
@@ -48,6 +52,10 @@ class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 		self.addProperty('ffmpeg_path', 'Path to FFMPEG binary', pathlib.Path('C:\\Program Files\\ffmpeg-4.2.2-win64-static\\bin'))
 		self.addProperty('video_path', 'Path to video location', pathlib.Path('~/Videos').expanduser())
 		self.addProperty('resume_delay', 'Delay (s) before resuming record', .5)
+
+		self.addProperty('hotkey_toggle_record', 'Recording toggle hotkey | ctrl+shift+', 'space')
+		self.addProperty('hotkey_reset', 'Recording reset hotkey | ctrl+shift+', 'r')
+		self.addProperty('hotkey_checkpoint', 'Recording checkpoint hotkey | ctrl+shift+', 'c')
 
 #		self.addProperty('ppt_host', 'PowerPoint host', '127.0.0.1')
 #		self.addProperty('ppt_port', 'PowerPoint port', 12345)
@@ -78,17 +86,44 @@ class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 		if self.settings['open_immediately']:
 			self.toggleWindow()
 
-		self.recordingSignalHandler = obs.obs_output_get_signal_handler(obs.obs_frontend_get_recording_output())
-		self.registerForEvents()
 		print(f'{self.name} Loaded!')
 
-	def registerForEvents(self):
-		def recordingFinished(*args):
-			return self.onRecordingFinished(*args)
-		
-		obs.signal_handler_connect(self.recordingSignalHandler, 'stop', recordingFinished)
+	def onUpdate(self):
+		self.unbindHotkeys()
+
+		self.hotkeys = {}
+		keySettings = {
+			'hotkey_checkpoint': self.doRecordingCheckpoint,
+			'hotkey_toggle_record': self.doRecordingToggle,
+			'hotkey_reset': self.doRecordingReset,
+		}
+
+		for setting,action in keySettings.items():
+			k = self.settings[setting]
+			if k not in ('', None):
+				self.hotkeys[('control', 'shift', k)] = action
+
+		self.bindHotkeys()
+
+	def unbindHotkeys(self):
+		for key in self.hotkeys.keys():
+			cbs = list(self.systemHotkey.get_callback(key))
+			if len(cbs) > 0 and cbs[0] is not None:
+				self.debug('unbinding hotkey', key)
+				self.systemHotkey.unregister(key)
+
+	def bindHotkeys(self):
+		for key,func in self.hotkeys.items():
+			self.debug('binding hotkey', key, 'to', func)
+			self.systemHotkey.register(key, callback=func, overwrite=True)
+
+	def onUnload(self):
+		self.unbindHotkeys()
+		if self.isGUIProcessActive():
+			self.process.terminate()
 
 	def onGUIProcessStarted(self):
+		self.debug('GUI process started')
 		super().onGUIProcessStarted()
 
 		if obs.obs_frontend_recording_paused():
@@ -98,36 +133,45 @@ class KROZ_ControlDeck(OBSScriptLib.OBSScriptWithGUI):
 		else:
 			self.send(OBSScriptLib.MessageType.OBS_EVENT, obs.OBS_FRONTEND_EVENT_RECORDING_STOPPED)
 
+	def doRecordingToggle(self, _=None):
+		if obs.obs_frontend_recording_paused():
+			obs.obs_frontend_recording_pause(False)
+		elif obs.obs_frontend_recording_active():
+			if self.settings['pause_instead_of_stop']:
+				obs.obs_frontend_recording_pause(True)
+			else:
+				obs.obs_frontend_recording_stop()
+		else:
+			obs.obs_frontend_recording_start()
+
+	def doRecordingReset(self, _=None):
+		if obs.obs_frontend_recording_paused() or obs.obs_frontend_recording_active():
+			self.log('Resetting to last checkpoint')
+			self.saveCompleteAction = self.deleteOnSaveCompleteAndResume
+			obs.obs_frontend_recording_stop()
+		else:
+			self.log('Starting recording')
+			obs.obs_frontend_recording_start()
+
+	def doRecordingCheckpoint(self, _=None):
+		if obs.obs_frontend_recording_paused() or obs.obs_frontend_recording_active():
+			self.log('Checkpoint!')
+			self.saveCompleteAction = self.resume
+			obs.obs_frontend_recording_stop()
+		else:
+			self.log('Starting recording')
+			obs.obs_frontend_recording_start()
+
 	def onMessageReceived(self, msg):
 		super().onMessageReceived(msg)
 
 		if msg.type == OBSScriptLib.MessageType.UI_EVENT:
 			if msg.data == 'click':
-				if obs.obs_frontend_recording_paused():
-					obs.obs_frontend_recording_pause(False)
-				elif obs.obs_frontend_recording_active():
-					if self.settings['pause_instead_of_stop']:
-						obs.obs_frontend_recording_pause(True)
-					else:
-						obs.obs_frontend_recording_stop()
-				else:
-					obs.obs_frontend_recording_start()
+				self.doRecordingToggle()
 			elif msg.data == 'reset':
-				if obs.obs_frontend_recording_paused() or obs.obs_frontend_recording_active():
-					self.log('Resetting to last checkpoint')
-					self.saveCompleteAction = self.deleteOnSaveCompleteAndResume
-					obs.obs_frontend_recording_stop()
-				else:
-					self.log('Starting recording')
-					obs.obs_frontend_recording_start()
+				self.doRecordingReset()
 			elif msg.data == 'checkpoint':
-				if obs.obs_frontend_recording_paused() or obs.obs_frontend_recording_active():
-					self.log('Checkpoint!')
-					self.saveCompleteAction = self.resume
-					obs.obs_frontend_recording_stop()
-				else:
-					self.log('Starting recording')
-					obs.obs_frontend_recording_start()
+				self.doRecordingCheckpoint()
 			elif msg.data == 'combine':
 				if obs.obs_frontend_recording_paused() or  obs.obs_frontend_recording_active():
 					obs.obs_frontend_recording_stop()
@@ -307,6 +351,11 @@ class States(Enum):
 def decode(text):
 	return text.replace('\\n', '\n').replace('\\t', '\t')
 
+if pathlib.Path(sys.executable).stem not in ['python', 'pythonw']:
+	scriptInstance = KROZ_ControlDeck()
+	scriptInstance.register()
+	recordingSignalHandler = obs.obs_output_get_signal_handler(obs.obs_frontend_get_recording_output())
+	def recordingFinished(*args):
+		return scriptInstance.onRecordingFinished(*args)
 
-scriptInstance = KROZ_ControlDeck()
-scriptInstance.register()
+	obs.signal_handler_connect(recordingSignalHandler, 'stop', recordingFinished)

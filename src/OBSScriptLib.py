@@ -34,7 +34,6 @@ def findLatestCapture(directory, ignoreName=None):
 
 	return pathlib.Path(directory) / newest_video_file.name
 
-
 def getOBSFont(settings, name):
 	font = obs.obs_data_get_obj(settings, name)
 
@@ -151,7 +150,6 @@ class OBSProp():
 	def get(self, settings):
 		return self.funcs['get'](settings, self.name)
 
-
 class OBSScript():
 	def __init__(self, description='An OBS Script'):
 		self.name = self.__class__.__name__
@@ -201,12 +199,16 @@ class OBSScript():
 			'script_defaults': '_setupDefaults',
 			'script_tick': 'onTick',
 			'script_load': '_onLoad',
-			'script_update': '_onUpdate'
+			'script_update': '_onUpdate',
+			'script_unload': 'onUnload'
 		}
 		for obsFuncName,objFuncName in functionNameMap.items():
 			if hasattr(self, objFuncName):
 				func = getattr(self, objFuncName)
 				setattr(callingModule, obsFuncName, func)
+
+	def onUnload(self):
+		pass
 
 	def onFrontendEvent(self, event):
 		pass
@@ -288,7 +290,6 @@ class OBSScriptWithGUI(OBSScript):
 		else:
 			self.debug('Toggle window')
 			self.send(MessageType.UI_EVENT, 'toggle_visibility')
-
 
 	def onGUIProcessStarted(self):
 		self.send(MessageType.OBS_SETTINGS, self.settings)
